@@ -1,0 +1,84 @@
+/*
+==================================================================
+Script: Bronze Layer Table Definitions
+==================================================================
+Purpose:
+  This script defines the staging (bronze) layer tables used to load 
+  raw data from external CSV files before further transformation or processing.
+
+Description:
+  - Drops existing bronze tables if they exist to ensure a clean state.
+  - Recreates each table with the appropriate schema and data types 
+    matching the source files.
+  - These tables serve as the initial landing zone for untransformed data.
+
+Table Summary:
+  - bronze.crm_cust_info: Customer master data from CRM system.
+  - bronze.crm_prd_info: Product master data including lifecycle dates.
+  - bronze.crm_sales_details: Sales transaction details.
+  - bronze.erp_cust_az12: Additional customer attributes from ERP.
+  - bronze.erp_loc_a101: Customer location information.
+  - bronze.erp_px_cat_g1v2: Product category hierarchy with maintenance flag.
+
+Note:
+  These tables are truncated and loaded via COPY operations in the 
+  'load_bronze' stored procedure.
+*/
+
+
+
+drop table if exists bronze.crm_cust_info;
+Create Table bronze.crm_cust_info(
+cst_id int,
+cst_key VARCHAR(50),
+cst_firstname VARCHAR(50),
+cst_lastname VARCHAR(50),
+cst_marital_status VARCHAR(50),
+cst_gndr VARCHAR(50),
+cst_create_date DATE
+);
+
+drop table if exists bronze.crm_prd_info;
+create table bronze.crm_prd_info(
+prd_id int,
+prd_key varchar,
+prd_nm varchar,
+prd_cost int,
+prd_line varchar,
+prd_start_dt DATE,
+prd_end_dt DATE
+);
+
+drop table if exists bronze.crm_sales_details;
+create table bronze.crm_sales_details(
+sls_ord_num varchar,
+sls_prd_key varchar,
+sls_cust_id int,
+sls_order_dt int,
+sls_ship_dt int,
+sls_due_dt int,
+sls_sales int,
+sls_quantity int,
+sls_price int
+);
+
+drop table if exists bronze.erp_cust_az12;
+create table bronze.erp_cust_az12(
+CID varchar,
+BDATE date,
+GEN varchar
+);
+
+drop table if exists bronze.erp_loc_a101;
+create table bronze.erp_loc_a101(
+CID varchar,
+CNTRY varchar
+);
+
+drop table if exists bronze.erp_px_cat_g1v2;
+create table bronze.erp_px_cat_g1v2(
+ID varchar,
+CAT varchar,
+SUBCAT varchar,
+MAINTENANCE bool
+);

@@ -1,0 +1,261 @@
+/*
+==================================================================
+Procedure: silver.load_silver()
+==================================================================
+
+Purpose:
+  This procedure loads, transforms, and standardizes raw data from the
+  Bronze layer into the Silver layer. The Silver layer serves as a cleaned 
+  and structured foundation for analytics, reporting, and downstream processes.
+
+Description:
+  - Loads deduplicated and normalized customer information.
+  - Extracts and standardizes product metadata with derived category fields.
+  - Cleans and validates sales transaction data, ensuring consistency in sales logic.
+  - Processes ERP-based customer demographic and geographic data.
+  - Applies transformations to align naming conventions, correct invalid values,
+    and compute derived columns (e.g., product end dates, computed sales).
+  - Ensures all Silver tables are truncated and reloaded to maintain freshness.
+
+Target Tables:
+  - silver.crm_cust_info       : Cleaned customer master data.
+  - silver.crm_prd_info        : Enriched product catalog with standardized keys and categories.
+  - silver.crm_sales_details   : Validated sales data with corrected amounts and dates.
+  - silver.erp_cust_az12       : Customer demographics with normalized gender and birth dates.
+  - silver.erp_loc_a101        : Customer country data with standardized names.
+  - silver.erp_px_cat_g1v2     : ERP product category hierarchy.
+
+Usage:
+  CALL silver.load_silver();
+
+Notes:
+  - Each section logs execution time using `RAISE NOTICE`.
+  - Procedure includes exception handling for error reporting.
+  - Designed to be idempotent and safe for regular batch execution.
+
+==================================================================
+*/
+CREATE OR REPLACE PROCEDURE silver.load_silver()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    rows_loaded INT;
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+
+
+BEGIN
+    ------------------------------------------------------------------
+    -- Load cleaned customer info into silver.crm_cust_info
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.crm_cust_info';
+    TRUNCATE TABLE silver.crm_cust_info;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.crm_cust_info (
+        cst_id,
+        cst_key,
+        cst_firstname,
+        cst_lastname,
+        cst_marital_status,
+        cst_gndr,
+        cst_create_date
+    )
+    SELECT
+        cst_id,
+        cst_key,
+        TRIM(cst_firstname),
+        TRIM(cst_lastname),
+        CASE 
+            WHEN UPPER(TRIM(cst_marital_status)) = 'M' THEN 'Married'
+            WHEN UPPER(TRIM(cst_marital_status)) = 'S' THEN 'Single'
+            ELSE 'N/A'
+        END,
+        CASE 
+            WHEN UPPER(TRIM(cst_gndr)) = 'M' THEN 'Male'
+            WHEN UPPER(TRIM(cst_gndr)) = 'F' THEN 'Female'
+            ELSE 'N/A'
+        END,
+        cst_create_date
+    FROM (
+        SELECT *
+        FROM (
+            SELECT *, RANK() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS last_flag
+            FROM bronze.crm_cust_info
+            WHERE cst_id IS NOT NULL
+        ) AS ranked
+        WHERE last_flag = 1
+    ) AS deduped;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'crm_cust_info loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+    ------------------------------------------------------------------
+    -- Load cleaned product info into silver.crm_prd_info
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.crm_prd_info';
+    TRUNCATE TABLE silver.crm_prd_info;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.crm_prd_info (
+        prd_id,
+        cat_id,
+        prd_key,
+        prd_nm,
+        prd_cost,
+        prd_line,
+        prd_start_dt,
+        prd_end_dt
+    )
+    SELECT 
+        prd_id,
+        REPLACE(SUBSTRING(prd_key, 1, 5), '-', '_') AS cat_id,
+        SUBSTRING(prd_key, 7, LENGTH(prd_key)) AS prd_key,
+        prd_nm,
+        COALESCE(prd_cost, 0),
+        CASE 
+            WHEN UPPER(TRIM(prd_line)) = 'R' THEN 'Road'
+            WHEN UPPER(TRIM(prd_line)) = 'M' THEN 'Mountain'
+            WHEN UPPER(TRIM(prd_line)) = 'S' THEN 'Other Sales'
+            WHEN UPPER(TRIM(prd_line)) = 'T' THEN 'Touring'
+            ELSE 'N/A'
+        END,
+        prd_start_dt,
+        LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt) AS prd_end_dt
+    FROM bronze.crm_prd_info;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'crm_prd_info loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+    ------------------------------------------------------------------
+    -- Load and transform sales data into silver.crm_sales_details
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.crm_sales_details';
+    TRUNCATE TABLE silver.crm_sales_details;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.crm_sales_details (
+        sls_ord_num,
+        sls_prd_key,
+        sls_cust_id,
+        sls_order_dt,
+        sls_ship_dt,
+        sls_due_dt,
+        sls_sales,
+        sls_quantity,
+        sls_price
+    )
+    SELECT
+        sls_ord_num,
+        sls_prd_key,
+        sls_cust_id,
+        CASE 
+            WHEN sls_order_dt = 0 OR LENGTH(CAST(sls_order_dt AS VARCHAR)) != 8 THEN NULL
+            ELSE TO_DATE(sls_order_dt::TEXT, 'YYYYMMDD')
+        END,
+        TO_DATE(sls_ship_dt::TEXT, 'YYYYMMDD'),
+        TO_DATE(sls_due_dt::TEXT, 'YYYYMMDD'),
+        CASE 
+            WHEN sls_sales <= 0 OR sls_sales IS NULL OR sls_sales != sls_quantity * sls_price THEN sls_quantity * ABS(sls_price)
+            ELSE sls_sales
+        END,
+        sls_quantity,
+        CASE 
+            WHEN sls_price < 0 THEN ABS(sls_price)
+            WHEN sls_price = 0 OR sls_price IS NULL THEN sls_sales / sls_quantity
+            ELSE sls_price
+        END
+    FROM bronze.crm_sales_details;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'crm_sales_details loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+    ------------------------------------------------------------------
+    -- Load ERP customer demographics into silver.erp_cust_az12
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.erp_cust_az12';
+    TRUNCATE TABLE silver.erp_cust_az12;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.erp_cust_az12 (
+        cid,
+        bdate,
+        gen
+    )
+    SELECT 
+        CASE 
+            WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid, 4, LENGTH(cid))
+            ELSE cid
+        END,
+        CASE 
+            WHEN bdate > clock_timestamp() THEN NULL
+            ELSE bdate
+        END,
+        CASE 
+            WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female'
+            WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male'
+            ELSE 'N/A'
+        END
+    FROM bronze.erp_cust_az12;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'erp_cust_az12 loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+    ------------------------------------------------------------------
+    -- Load ERP customer location info into silver.erp_loc_a101
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.erp_loc_a101';
+    TRUNCATE TABLE silver.erp_loc_a101;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.erp_loc_a101 (
+        cid,
+        cntry
+    )
+    SELECT 
+        REPLACE(cid, '-', '_'),
+        CASE 
+            WHEN TRIM(cntry) IN ('US', 'USA') THEN 'United States'
+            WHEN TRIM(cntry) = 'DE' THEN 'Germany'
+            WHEN TRIM(cntry) IS NULL OR TRIM(cntry) = '' THEN 'N/A'
+            ELSE TRIM(cntry)
+        END
+    FROM bronze.erp_loc_a101;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'erp_loc_a101 loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+    ------------------------------------------------------------------
+    -- Load ERP product category info into silver.erp_px_cat_g1v2
+    ------------------------------------------------------------------
+    RAISE NOTICE 'Loading silver.erp_px_cat_g1v2';
+    TRUNCATE TABLE silver.erp_px_cat_g1v2;
+
+    start_time := clock_timestamp();
+
+    INSERT INTO silver.erp_px_cat_g1v2 (
+        id,
+        cat,
+        subcat,
+        maintenance
+    )
+    SELECT 
+        id,
+        cat,
+        subcat,
+        maintenance
+    FROM bronze.erp_px_cat_g1v2;
+
+    end_time := clock_timestamp();
+    RAISE NOTICE 'erp_px_cat_g1v2 loaded in % seconds.', EXTRACT(EPOCH FROM (end_time - start_time));
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error loading Silver layer: %', SQLERRM;
+END;
+$$;

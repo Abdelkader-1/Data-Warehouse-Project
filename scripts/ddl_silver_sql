@@ -1,0 +1,85 @@
+/*
+==================================================================
+Script: silver Layer Table Definitions
+==================================================================
+Purpose:
+  This script defines the staging (silver) layer tables used to load 
+  raw data from external CSV files before further transformation or processing.
+
+Description:
+  - Drops existing silver tables if they exist to ensure a clean state.
+  - Recreates each table with the appropriate schema and data types 
+    matching the source files.
+  - These tables serve as the initial landing zone for untransformed data.
+
+Table Summary:
+  - silver.crm_cust_info: Customer master data from CRM system.
+  - silver.crm_prd_info: Product master data including lifecycle dates.
+  - silver.crm_sales_details: Sales transaction details.
+  - silver.erp_cust_az12: Additional customer attributes from ERP.
+  - silver.erp_loc_a101: Customer location information.
+  - silver.erp_px_cat_g1v2: Product category hierarchy with maintenance flag.
+
+Note:
+  These tables are truncated and loaded via COPY operations in the 
+  'load_silver' stored procedure.
+*/
+
+
+
+drop table if exists silver.crm_cust_info;
+Create Table silver.crm_cust_info(
+cst_id int,
+cst_key VARCHAR(50),
+cst_firstname VARCHAR(50),
+cst_lastname VARCHAR(50),
+cst_marital_status VARCHAR(50),
+cst_gndr VARCHAR(50),
+cst_create_date DATE
+);
+
+drop table if exists silver.crm_prd_info;
+create table silver.crm_prd_info(
+prd_id int,
+cat_id varchar,
+prd_key varchar,
+prd_nm varchar,
+prd_cost int,
+prd_line varchar,
+prd_start_dt DATE,
+prd_end_dt DATE
+);
+
+drop table if exists silver.crm_sales_details;
+create table silver.crm_sales_details(
+sls_ord_num varchar,
+sls_prd_key varchar,
+sls_cust_id int,
+sls_order_dt date,
+sls_ship_dt date,
+sls_due_dt date,
+sls_sales int,
+sls_quantity int,
+sls_price int
+);
+
+drop table if exists silver.erp_cust_az12;
+create table silver.erp_cust_az12(
+CID varchar,
+BDATE date,
+GEN varchar
+);
+
+drop table if exists silver.erp_loc_a101;
+create table silver.erp_loc_a101(
+CID varchar,
+CNTRY varchar
+);
+
+drop table if exists silver.erp_px_cat_g1v2;
+create table silver.erp_px_cat_g1v2(
+ID varchar,
+CAT varchar,
+SUBCAT varchar,
+MAINTENANCE bool
+);
